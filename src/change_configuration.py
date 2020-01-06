@@ -8,20 +8,14 @@ def insert_component(sourcepin, target1, source1):
     source = hal.Pin(sourcepin)
     if source.linked:
         sig = source.signal
-        signame = sig.name
         sigtype = sig.type
         sigreaders = sig.readers
-        pindict = hal.pins()
         targets_found = 0
         targets = []
-        #print(sig.name)
         for pinname in hal.pins():
-            #print(pinname)
             temppin = hal.Pin(pinname)
             if (temppin.signal == sig) and (temppin.name != source.name):
                 targets_found += 1
-                #print('found %i' % targets_found)
-                #print(temppin.name)
                 targets.append(temppin.name)
             if targets_found == sigreaders:
                 break
@@ -61,7 +55,7 @@ def insert_jplanners():
     for i in range(1,7):
 
         # create jplanner
-        jplan = rt.newinst('jplan', 'jp%s' %i)
+        rt.newinst('jplan', 'jp%s' %i)
         hal.addf('jp%s.update' %i, 'robot_hw_thread')
 
         # copy current position
@@ -74,7 +68,7 @@ def insert_jplanners():
 
         # get component to insert _after_
         source = 'hal_hw_interface.joint_%s.pos-cmd' %i
-        mux2 = rt.newinst('mux2v2', 'joint%s_mux' %i)
+        rt.newinst('mux2v2', 'joint%s_mux' %i)
         hal.addf('joint%s_mux.funct' %i, 'robot_hw_thread')
 
         # insert the mux component _after_ source component
@@ -108,7 +102,7 @@ def change_config():
 
     # check for an existing signal "mod_success"
     try:
-        mod_success = hal.Signal("mod_success")
+        hal.Signal("mod_success")
     except RuntimeError as e:
         if e.message == "signal 'mod_success' does not exist":
             # good to go, no previous attempt
