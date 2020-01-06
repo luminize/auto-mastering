@@ -1,0 +1,23 @@
+skinparam {
+
+    ArrowColor MidnightBlue
+
+    stateStartColor MidnightBlue
+
+    stateBackgroundColor AliceBlue
+    stateBarColor MidnightBlue
+    stateBorderColor MidnightBlue
+    stateBorderThickness 1
+    stateDiamondBackgroundColor AliceBlue
+
+    stateDiamondBorderColor MidnightBlue
+    stateDiamondFontColor Black
+    stateDiamondFontSize 12
+    stateDiamondFontStyle Regular
+
+    stateEndColor MidnightBlue
+    stateFontColor Black
+    stateFontSize 12
+    stateFontStyle Regular
+
+}

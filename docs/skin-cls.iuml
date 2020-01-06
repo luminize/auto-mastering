@@ -1,0 +1,17 @@
+skinparam class {
+
+    ArrowColor MidnightBlue
+
+    BackgroundColor AliceBlue
+    BarColor MidnightBlue
+    BorderColor MidnightBlue
+    BorderThickness 1
+    DiamondBackgroundColor AliceBlue
+
+    DiamondBorderColor MidnightBlue
+    DiamondFontColor Black
+    DiamondFontName Impact
+    DiamondFontSize 12
+    DiamondFontStyle Regular
+
+}

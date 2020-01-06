@@ -1,0 +1,18 @@
+skinparam {
+
+    activityStartColor MidnightBlue
+
+    ArrowColor MidnightBlue
+
+    activityBackgroundColor AliceBlue
+    activityBarColor MidnightBlue
+    activityBorderColor MidnightBlue
+    activityBorderThickness 1
+    activityDiamondBackgroundColor AliceBlue
+
+    activityDiamondBorderColor MidnightBlue
+    activityDiamondFontColor Black
+    activityDiamondFontSize 12
+    activityDiamondFontStyle Regular
+
+}

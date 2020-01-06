@@ -1,0 +1,18 @@
+skinparam sequence {
+	ArrowColor MidnightBlue
+	ActorBorderColor MidnightBlue
+	LifeLineBorderColor MidnightBlue
+	LifeLineBackgroundColor AliceBlue
+
+	ParticipantBorderColor MidnightBlue
+	ParticipantBackgroundColor AliceBlue
+	ParticipantFontName Impact
+	ParticipantFontSize 12
+	ParticipantFontColor MidnightBlue
+
+	ActorBackgroundColor AliceBlue
+    ActorForegroundColor MidnightBlue
+	ActorFontColor MidnightBlue
+	ActorFontSize 12
+	ActorFontName Impact
+}
