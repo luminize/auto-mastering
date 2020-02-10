@@ -97,7 +97,7 @@ def change_config():
     
     # connect to HAL
     rt.init_RTAPI()
-    hal.stop_threads()
+    #hal.stop_threads()
     time.sleep(0.1)
 
     # check for an existing signal "mod_success"
@@ -107,7 +107,7 @@ def change_config():
         if e.message == "signal 'mod_success' does not exist":
             # good to go, no previous attempt
             insert_jplanners()
-            hal.start_threads()
+            #hal.start_threads()
 
 if __name__ == "__main__":
     change_config()
