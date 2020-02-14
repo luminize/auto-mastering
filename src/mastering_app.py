@@ -4,9 +4,143 @@ import attr
 import time
 from machinekit import hal as hal
 from machinekit import rtapi as rt
+from machinetalk.protobuf.sample_pb2 import Sample
 from fysom import Fysom, FysomError
 from math import pi
 
+@attr.s
+class Recorder(object):
+    hal = attr.ib()
+    name = attr.ib(default="")
+    ring = attr.ib(default="")
+    sampler = attr.ib(default="")
+    max_samples = attr.ib(default=20)
+    homing_offset = attr.ib(default=0.5)
+    # to be reset each time a new recording is made
+    samples = attr.ib(default='record,series,flt_timestamp,sensor,direction,rotation\n')
+    ring = attr.ib(default="")
+    sampler = attr.ib(default="")
+    recorder_active = attr.ib(default=False)
+    sample = attr.ib(default=0)
+
+    def reset(self):
+        self.samples = 'record,series,flt_timestamp,sensor,direction,rotation\n'
+        self.ring = ""
+        self.sampler = ""
+        self.recorder_active = False
+        self.sample = 0
+
+    def start(self):
+        self.prev_sensor_val = 0
+        self.curr_sensor_val = 0
+        self.prev_position = 0
+        self.curr_position = 0
+        self.prev_position_ts = 0
+        self.curr_position_ts = 0
+        # fo initializing curr and prev sensor val on the first time
+        self.new_recording = True
+        self.sensor = 0
+        self.record_next_rotation = False
+        #filename="data_20200113_1.csv"
+        self.series = -1
+        self.record = 0
+        self.recorder_active = False
+        try:
+            # try to attach to ring
+            self.r = self.hal.Ring(self.ring)
+            # flush the ring first
+            self.hal.Pin("{}.{}".format(self.sampler, "record")).set(0)
+            time.sleep(0.01)
+            for i in self.r:
+                self.r.shift()
+            self.hal.Pin("{}.{}".format(self.sampler, "record")).set(1)
+            self.recorder_active = True
+        except NameError as e:
+            print(e)
+
+    def stop(self):
+        self.hal.Pin("{}.{}".format(self.sampler, "record")).set(0)
+
+    def process_samples(self):
+        if (self.ring == "") or (self.sampler == "") or (self.recorder_active == False):
+            print("No sampler or ring given, or recorder not active")
+        else:
+            # inspect the ring:
+            for i in self.r:
+                self.sample += 1
+                b = i.tobytes()
+                s = Sample()
+                s.ParseFromString(b)
+                if (s.HasField("v_bool") == True):
+                    ts = s.timestamp
+                    v = s.v_bool
+                    t = "bit"
+                    # to not detect an edge the first time
+                    # initialize prev_sensor_val correctly
+                    if self.new_recording == True:
+                        self.prev_sensor_val = v
+                        self.curr_sensor_val = v
+                        self.new_recording = False
+                    self.prev_sensor_val = self.curr_sensor_val
+                    self.curr_sensor_val = v
+                    self.curr_timestamp = ts
+                if (s.HasField("v_double") == True):
+                    ts = s.timestamp
+                    v = s.v_double
+                    t = "flt"
+                    self.prev_position = self.curr_position
+                    self.prev_position_ts = self.curr_position_ts
+                    self.curr_position = v
+                    self.curr_position_ts = ts
+                if (s.HasField("v_uint32") == True):
+                    ts = s.timestamp
+                    v = s.v_uint32
+                    t = "u32"
+                    self.series = v
+                if (s.HasField("v_int32") == True):
+                    v = s.v_int32
+                    t = "s32"
+                # the rotation value _after_ a sensor bit change
+                if (self.record_next_rotation == True) and (t == 'flt'):
+                    self.record += 1
+                    if self.prev_position < self.curr_position:
+                        self.direction = "up"
+                    else:
+                        self.direction = "down"
+                    print("{},{},{},{},{},{}".format(
+                        self.record,
+                        self.series,
+                        self.curr_timestamp,
+                        self.sensor,
+                        self.direction,
+                        self.curr_position))
+                    self.samples += "{},{},{},{},{},{}\n".format(
+                        self.record,
+                        self.series,
+                        self.curr_timestamp,
+                        self.sensor,
+                        self.direction,
+                        self.curr_position)
+                    # reset the record_next_rotation bool
+                    self.record_next_rotation = False
+                    # extra: do not record a second time
+                    self.prev_sensor_val = self.curr_sensor_val 
+                # detect change in sensor bit, record _next_ rotation value
+                if self.prev_sensor_val != self.curr_sensor_val:
+                    self.sensor = self.curr_sensor_val
+                    self.record_next_rotation = True
+                self.r.shift()
+
+    def get_samples(self):
+        return self.samples    
+
+    def set_sampler(self, sampler_inst="", ring_name=""):
+        if (sampler_inst == "") or (ring_name == ""):
+            print("No sampler or ring given")
+        else:
+            self.reset()
+            self.sampler = sampler_inst
+            self.ring = ring_name
 
 @attr.s
 class Joint(object):
@@ -16,8 +150,10 @@ class Joint(object):
     max_acc = attr.ib(default=0.1)
     curr_pos = attr.ib(default=0.)
     pos_cmd = attr.ib(default=0.)
+    offset = attr.ib(default=0.)
+    calibrated = attr.ib(default=False)
 
-    def pin(self, pinname=""):
+    def jp_pin(self, pinname=""):
         return "{}.{}".format(self.jp_name, pinname)
 
 @attr.s
@@ -111,12 +247,12 @@ class Leveller(object):
             self.calc_joint_move(longest_distance)
             for i in range(0,6):
                 j = self.joints[i]
-                print("{} -> {}".format(j.pin("max-vel"), j.max_vel))
-                print("{} -> {}".format(j.pin("max-acc"), j.max_acc))
-                print("{} -> {}".format(j.pin("pos-cmd"), j.pos_cmd))
-                self.hal.Pin(j.pin("max-vel")).set(j.max_vel)
-                self.hal.Pin(j.pin("max-acc")).set(j.max_acc)
-                self.hal.Pin(j.pin("pos-cmd")).set(j.pos_cmd)
+                print("{} -> {}".format(j.jp_pin("max-vel"), j.max_vel))
+                print("{} -> {}".format(j.jp_pin("max-acc"), j.max_acc))
+                print("{} -> {}".format(j.jp_pin("pos-cmd"), j.pos_cmd))
+                self.hal.Pin(j.jp_pin("max-vel")).set(j.max_vel)
+                self.hal.Pin(j.jp_pin("max-acc")).set(j.max_acc)
+                self.hal.Pin(j.jp_pin("pos-cmd")).set(j.pos_cmd)
 
     def find_longest_distance(self, nr=0):
         abs_dist = 0
@@ -145,6 +281,7 @@ class Leveller(object):
         for i in range(0,6):
             j = self.joints[i]
             j.jp_name = "jp{}.0".format(i+1)
+        self.recorder = Recorder(name="sample_recorder", hal=self.hal)
 
     def disable_all_jplan(self):
         for i in range(0,6):
