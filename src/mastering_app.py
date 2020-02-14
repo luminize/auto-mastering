@@ -134,18 +134,20 @@ class Recorder(object):
     def get_samples(self):
         return self.samples    
 
-    def set_sampler(self, sampler_inst="", ring_name=""):
-        if (sampler_inst == "") or (ring_name == ""):
+    def set_sampler(self, sampler_name="", ring_name=""):
+        if (sampler_name == "") or (ring_name == ""):
             print("No sampler or ring given")
         else:
             self.reset()
-            self.sampler = sampler_inst
+            self.sampler = sampler_name
             self.ring = ring_name
 
 @attr.s
 class Joint(object):
     name = attr.ib(default="")
     jp_name = attr.ib(default="")
+    sampler_name = attr.ib(default="")
+    ring_name = attr.ib(default="")
     max_vel = attr.ib(default=0.1)
     max_acc = attr.ib(default=0.1)
     curr_pos = attr.ib(default=0.)
@@ -155,6 +157,9 @@ class Joint(object):
 
     def jp_pin(self, pinname=""):
         return "{}.{}".format(self.jp_name, pinname)
+
+    def sampler_pin(self, pinname=""):
+        return "{}.{}".format(self.sampler_name, pinname)
 
 @attr.s
 class Leveller(object):
@@ -281,6 +286,8 @@ class Leveller(object):
         for i in range(0,6):
             j = self.joints[i]
             j.jp_name = "jp{}.0".format(i+1)
+            j.sampler_name = "sampler{}".format(i+1)
+            j.ring_name = "sampler{}.ring".format(i+1)
         self.recorder = Recorder(name="sample_recorder", hal=self.hal)
 
     def disable_all_jplan(self):
@@ -292,6 +299,42 @@ class Leveller(object):
         for i in range(0,6):
             j = self.joints[i]
             self.hal.Pin(j.pin('enable')).set(1)
+
+    def oscillate_joint(self, nr=-1, nominal=0., amplitude=0.5, nr_measurements=5, speed=.1, accel=3.0):
+        if nr in self.joints:
+            direction = 1
+            target = nominal + (amplitude * direction)
+            delta = 0.01
+            measurement = 0
+            j = self.joints[nr]
+            self.hal.Pin(j.jp_pin("max-vel")).set(speed)
+            self.hal.Pin(j.jp_pin("max-acc")).set(accel)
+            self.hal.Pin(j.jp_pin("pos-cmd")).set(target)
+            # set correct settings of the ring of the joint
+            self.recorder.reset()
+            self.recorder.set_sampler(sampler_name=j.sampler_name,
+                                      ring_name=j.ring_name)
+            self.recorder.start()
+            while (measurement < nr_measurements):
+                # process the records in the ring
+                self.recorder.process_samples()
+                # get the current position
+                curr_pos = self.hal.Signal('joint%s_ros_pos_fb' % (nr+1)).get()
+                if direction > 0:
+                    if curr_pos > (target - delta):
+                        direction *= -1
+                        target = nominal + (amplitude * direction)
+                        measurement += 1
+                        print("Measurement: %s" % measurement)
+                        self.hal.Pin(j.jp_pin("pos-cmd")).set(target)
+                if direction < 0:
+                    if curr_pos < (target + delta):
+                        direction *= -1
+                        target = nominal + (amplitude * direction)
+                        self.hal.Pin(j.jp_pin("pos-cmd")).set(target)
+                time.sleep(0.1)
+            self.recorder.stop()
+            self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal)
 
     def calibrate_all(self):
         pass
