@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-
+import sys
 import attr
 import time
 from machinekit import hal as hal
@@ -7,6 +7,9 @@ from machinekit import rtapi as rt
 from machinetalk.protobuf.sample_pb2 import Sample
 from fysom import Fysom, FysomError
 from math import pi
+from pandas import pandas as pd
+from StringIO import StringIO
+
 
 @attr.s
 class Recorder(object):
@@ -142,6 +145,7 @@ class Recorder(object):
             self.sampler = sampler_name
             self.ring = ring_name
 
+
 @attr.s
 class Joint(object):
     name = attr.ib(default="")
@@ -152,14 +156,27 @@ class Joint(object):
     max_acc = attr.ib(default=0.1)
     curr_pos = attr.ib(default=0.)
     pos_cmd = attr.ib(default=0.)
-    offset = attr.ib(default=0.)
+    home = attr.ib(default=0.)
     calibrated = attr.ib(default=False)
+    data_raw = attr.ib(default="")
 
     def jp_pin(self, pinname=""):
         return "{}.{}".format(self.jp_name, pinname)
 
     def sampler_pin(self, pinname=""):
         return "{}.{}".format(self.sampler_name, pinname)
+
+    def calculate_home(self, sample_values=""):
+        if (sample_values!=""):
+            d = pd.read_csv(StringIO(sample_values))
+            self.raw_data = d
+            d_u = d.loc[d['direction']=='up']
+            d_d = d.loc[d['direction']=='down']
+            mean_u = d_u.rotation.mean()
+            mean_d = d_d.rotation.mean()
+            self.home = (mean_d + mean_u) / 2
+            self.calibrated = True
+
 
 @attr.s
 class Leveller(object):
@@ -335,6 +352,7 @@ class Leveller(object):
                 time.sleep(0.1)
             self.recorder.stop()
             self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal)
+            j.calculate_home(sample_values=self.recorder.get_samples())
 
     def calibrate_all(self):
         pass
@@ -355,7 +373,18 @@ class Leveller(object):
         pass
 
     def calibrate_6(self):
-        pass
+        # first rough calculation, 
+        self.oscillate_joint(nr=5, nr_measurements=4)
+        print('rough home of joint 6 is %s' % self.joints[5].home)
+        # then do accurate calculation
+        self.oscillate_joint(nr=5,
+                             nr_measurements=10,
+                             nominal=self.joints[5].home,
+                             amplitude=0.05,
+                             speed=0.005)
+        # move to the calculated offset value
+        self.hal.Pin(j.jp_pin("pos-cmd")).set(self.joints[5].home)
+        print('accurate home of joint 6 is %s' % self.joints[5].home)
 
 def init_levelling():
     l = Leveller(name="Masterer")
