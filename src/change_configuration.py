@@ -51,13 +51,16 @@ def insert_jplanners():
     series = hal.newsig("series", hal.HAL_U32)
     series.set(0)
 
+    rt.newinst('ornv2', 'jplanners_active', pincount=8)
+
     # start changing the HAL configuration
     for i in range(1,7):
 
         # create jplanner
         rt.newinst('jplan', 'jp%s' %i)
-        hal.addf('jp%s.update' %i, 'robot_hw_thread')
-
+        hal.addf('jp%s.update' %i, 'robot_hw_thread', 68+i)
+        hal.Pin('jp%s.0.active' %i).link('jplanners_active.in%s' %(i-1))
+        time.sleep(0.005)
         # copy current position
         hal.Pin('jp%s.0.pos-cmd' %i).set(hal.Pin('hal_hw_interface.joint_%s.pos-fb' %i).get())
 
@@ -69,8 +72,8 @@ def insert_jplanners():
         # get component to insert _after_
         source = 'hal_hw_interface.joint_%s.pos-cmd' %i
         rt.newinst('mux2v2', 'joint%s_mux' %i)
-        hal.addf('joint%s_mux.funct' %i, 'robot_hw_thread')
-
+        hal.addf('joint%s_mux.funct' %i, 'robot_hw_thread', 68+2*i)
+        time.sleep(0.005)
         # insert the mux component _after_ source component
         # the target1 is the new pin to be connected to the source component
         # the source1 is the pin the existing signals are to be connected to
@@ -80,7 +83,7 @@ def insert_jplanners():
         hal.Pin('jp%s.0.curr-pos' %i).link('joint%s_mux.in1' %i)
 
         # create sample_channel
-        rt.newinst('sample_channel_pb', 'sampler%s'  %i, '--', 'samples=bfu','names=sensor,rotation,series','cycles=100')
+        rt.newinst('sample_channel_pb', 'sampler%s'  %i, '--', 'samples=bfu','names=sensor,rotation,series','cycles=2000')
         hal.addf('sampler%s.record_sample' %i, 'robot_hw_thread')
         hal.Signal('joint%s_ros_pos_fb' %i).link('sampler%s.in-flt.1' %i)
         hal.Pin('lcec.0.6.din-7').link('sampler%s.in-bit.1' %i)
@@ -91,7 +94,10 @@ def insert_jplanners():
         # select the jplanner channel
         hal.Pin('joint%s_mux.sel' %i).set(1)
         # leave info in HAL that this script was succesful
+        
         mod_success.set(1)
+
+    hal.addf('jplanners_active.funct', 'robot_hw_thread', 75)
 
 def change_config():
     
