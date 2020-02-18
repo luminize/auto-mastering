@@ -15,21 +15,21 @@ idle --> activate_joint :user starts mastering
 idle: set first joint as target for mastering
 idle: show dialog
 idle: wait
-activate_joint --> move_to_pose
-activate_joint: prepare stuff
-activate_joint: start move
-move_to_pose --> calibrate_joint :pose reached
-move_to_pose: wait until pose is reached
+activate_joint --> move_to_first_pose
+activate_joint: prepare stuff, like set correct moves list
+activate_joint: start first move
+move_to_first_pose --> calibrate_joint
+move_to_first_pose: wait until current pose is reached
 calibrate_joint --> joint_calibrated :done
 calibrate_joint: set recording
-calibrate_joint: run calibration routine
-calibrate_joint: reset recording
-joint_calibrated --> move_to_pose :user not satisfied,\ndo again
-joint_calibrated --> save_offsets :user satisfied
-save_offsets --> activate_joint :next joint exists
-save_offsets: get next joint and set
-save_offsets: set joint as target for mastering
-save_offsets --> move_to_zero :**NO** next joint
+calibrate_joint: run specific calibration routine
+calibrate_joint: stop recording
+joint_calibrated --> activate_joint :user not satisfied,\ndo again
+joint_calibrated --> set_next_joint :user satisfied
+set_next_joint --> activate_joint :next joint exists
+set_next_joint: get next joint and set
+set_next_joint: set joint as target for mastering
+set_next_joint --> move_to_zero :**NO** next joint
 move_to_zero: start moving to zero pose
 move_to_zero: wait until position is reached
 move_to_zero --> finished: position reached
