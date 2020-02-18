@@ -25,6 +25,7 @@ class Recorder(object):
     sampler = attr.ib(default="")
     recorder_active = attr.ib(default=False)
     sample = attr.ib(default=0)
+    fine_calibration = attr.ib(default=False)
 
     def reset(self):
         self.samples = 'record,series,flt_timestamp,sensor,direction,rotation\n'
@@ -159,6 +160,7 @@ class Joint(object):
     home = attr.ib(default=0.)
     calibrated = attr.ib(default=False)
     data_raw = attr.ib(default="")
+    calibration = attr.ib(default="callback")
 
     def jp_pin(self, pinname=""):
         return "{}.{}".format(self.jp_name, pinname)
@@ -181,81 +183,45 @@ class Joint(object):
 @attr.s
 class Leveller(object):
     name = attr.ib()
-    fsm = attr.ib(Fysom(
-        {
-        'initial': {'state': 'initial', 'event': 'init', 'defer': True},
-        'events': [
-            {
-                'name': 't_setup',
-                'src': ['initial', 'fault'],
-                'dst': 'setup',
-                },
-            {'name': 't_idle', 'src': 'setup', 'dst': 'idle'},
-            {
-                'name': 't_activate',
-                'src': ['idle', 'save_offsets'],
-                'dst': 'activate_joint'},
-            {
-                'name': 't_move_to_pose',
-                'src': ['activate_joint', 'joint_calibrated'],
-                'dst': 'move_to_pose'
-                },
-            {'name': 't_calibrate', 'src': 'move_to_pose', 'dst': 'calibrate_joint'},
-            {'name': 't_calibrated', 'src': 'calibrate_joint', 'dst': 'joint_calibrated'},
-            {'name': 't_save', 'src': 'joint_calibrated', 'dst': 'save_offsets'},
-            {'name': 't_move_zero', 'src': 'save_offsets', 'dst': 'move_to_zero'},
-            {'name': 't_end', 'src': 'move_to_zero', 'dst': 'finished'},
-            {
-                'name': 't_error',
-                'src': [
-                    'initial',
-                    'setup',
-                    'idle',
-                    'activate_joint',
-                    'move_to_pose',
-                    'calibrate_joint',
-                    'joint_calibrated',
-                    'save_offsets',
-                    'move_to_zero'
-                ],
-                'dst': 'fault',
-                },
-            {
-                'name': 't_abort',
-                'src': [
-                    'initial',
-                    'setup',
-                    'idle',
-                    'activate_joint',
-                    'move_to_pose',
-                    'calibrate_joint',
-                    'joint_calibrated',
-                    'save_offsets',
-                    'move_to_zero'
-                ],
-                'dst': 'abort',
-                },
-            ],
-        }
-    ))
+    fsm = attr.ib(Fysom())
     poses = attr.ib({
             1: [.0, .0, .0, .0, .0, .0],
-            2: [-pi/2, .0, -pi/2, .0, pi/2, pi/2],
-            3: [-pi/2, .0, -pi/2, pi/2, pi/2, pi/2],
+            2: [.0, .0, -pi/2, .0, pi/2, .0],
+            3: [.0, .0, -pi/2, -pi/2, pi/2, .0],
             4: [.0, .0, -pi/4, -pi/2, .0, (pi/2 - pi/6)],
             5: [.0, .0, -pi/4, .0, .0, (-pi/6)],
             6: [.0, pi/4, .0,  .0, -pi/2, (-pi/6)],
             7: [-pi, -pi/4, .0,  .0, -pi/2, (-pi/6)],
             8: [-pi, -pi/4, -pi,  pi, -pi/2, (-pi/6)],
+            9: [.0, pi/4, .0,  .0, -pi/4, -pi],
     })
-    joints = attr.ib({
-            0: Joint(name='joint_1'),
-            1: Joint(name='joint_2'),
-            2: Joint(name='joint_3'),
-            3: Joint(name='joint_4'),
-            4: Joint(name='joint_5'),
-            5: Joint(name='joint_6'),
+    joints = attr.ib({})
+    calibration_moves = attr.ib({
+            1: [1],
+            # search tilt at 1 and record joint angle
+            # move to 7 and then 8
+            # search tilt at 8 and record joint angle
+            # calculate offset of difference
+            2: [6, 7, 8],
+            3: [3],
+            4: [1],
+            # search tilt at 4 and record joint angle
+            # move to 5
+            # search tilt at 5 and record joint angle
+            # 5 is parallel with 3
+            5: [4, 5],
+            6: [2],
     })
+    # sequence determines the order in which joints get calibrated
+    # the calibration moves define the poses in chich this is done
+    sequence = attr.ib([6, 3, 4, 5, 2])
+    # current joint to be calibrated
+    curr_joint = attr.ib(default=0)
+    # with its current calibration moves
+    moves = attr.ib(default=[])
+    # remember the current move 
+    moves_index=attr.ib(default=0)
+    fine_calibration=attr.ib(default=False)
     rt = attr.ib(rt.init_RTAPI())
     hal = attr.ib(hal)
     max_vel = attr.ib(default=0.1)
@@ -267,7 +233,7 @@ class Leveller(object):
             longest_distance = self.find_longest_distance(nr)
             print("longest distance = %s rad" % longest_distance)
             self.calc_joint_move(longest_distance)
-            for i in range(0,6):
+            for i in range(1,7):
                 j = self.joints[i]
                 print("{} -> {}".format(j.jp_pin("max-vel"), j.max_vel))
                 print("{} -> {}".format(j.jp_pin("max-acc"), j.max_acc))
@@ -279,12 +245,12 @@ class Leveller(object):
     def find_longest_distance(self, nr=0):
         abs_dist = 0
         longest_distance = 0
-        joint_nr = -1
-        for i in range(0,6):
-            curr_pos = self.hal.Signal('joint%s_ros_pos_fb' % (i+1)).get()
+        joint_nr = 0
+        for i in range(1,7):
+            curr_pos = self.hal.Signal('joint%s_ros_pos_fb' % i).get()
             j = self.joints[i]
             j.curr_pos = curr_pos
-            j.pos_cmd = self.poses[nr][i]
+            j.pos_cmd = self.poses[nr][i-1]
             abs_dist = abs(j.pos_cmd - j.curr_pos)
             if abs_dist > longest_distance:
                 longest_distance = abs_dist
@@ -292,32 +258,32 @@ class Leveller(object):
 
     def calc_joint_move(self, l_dist=0):
         if l_dist > 0:
-            for i in range(0,6):
+            for i in range(1,7):
                 j = self.joints[i]
                 dist = abs(j.pos_cmd - j.curr_pos)
-                print("distance joint {} is {} rad".format(1+i, dist))
+                print("distance joint {} is {} rad".format(i, dist))
                 j.max_acc = self.max_acc * (dist / l_dist) * self.speed_factor
                 j.max_vel = self.max_vel * (dist / l_dist) * self.speed_factor
 
     def initialize(self):
-        for i in range(0,6):
+        for i in range(1,7):
             j = self.joints[i]
-            j.jp_name = "jp{}.0".format(i+1)
-            j.sampler_name = "sampler{}".format(i+1)
-            j.ring_name = "sampler{}.ring".format(i+1)
+            j.jp_name = "jp{}.0".format(i)
+            j.sampler_name = "sampler{}".format(i)
+            j.ring_name = "sampler{}.ring".format(i)
         self.recorder = Recorder(name="sample_recorder", hal=self.hal)
 
     def disable_all_jplan(self):
-        for i in range(0,6):
-            j = self.joints[i]
+        for i in range(1,7):
+            j = self.joints[i-1]
             self.hal.Pin(j.pin('enable')).set(0)
 
     def enable_all_jplan(self):
-        for i in range(0,6):
-            j = self.joints[i]
+        for i in range(1,7):
+            j = self.joints[i-1]
             self.hal.Pin(j.pin('enable')).set(1)
 
-    def oscillate_joint(self, nr=-1, nominal=0., amplitude=0.5, nr_measurements=5, speed=.1, accel=3.0):
+    def oscillate_joint(self, nr=0, nominal=0., amplitude=0.5, nr_measurements=5, speed=.1, accel=3.0):
         if nr in self.joints:
             direction = 1
             target = nominal + (amplitude * direction)
@@ -336,7 +302,7 @@ class Leveller(object):
                 # process the records in the ring
                 self.recorder.process_samples()
                 # get the current position
-                curr_pos = self.hal.Signal('joint%s_ros_pos_fb' % (nr+1)).get()
+                curr_pos = self.hal.Signal('joint%s_ros_pos_fb' % (nr)).get()
                 if direction > 0:
                     if curr_pos > (target - delta):
                         direction *= -1
@@ -354,41 +320,187 @@ class Leveller(object):
             self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal)
             j.calculate_home(sample_values=self.recorder.get_samples())
 
-    def calibrate_all(self):
-        pass
-
     def calibrate_1(self):
-        pass
+        j = self.joints[self.curr_joint]
+        print("calibration of %s" % j.name)
 
     def calibrate_2(self):
-        pass
+        j = self.joints[self.curr_joint]
+        print("calibration of %s" % j.name)
 
     def calibrate_3(self):
-        pass
+        j = self.joints[self.curr_joint]
+        print("calibration of %s" % j.name)
 
     def calibrate_4(self):
-        pass
+        j = self.joints[self.curr_joint]
+        print("calibration of %s" % j.name)
 
     def calibrate_5(self):
-        pass
+        j = self.joints[self.curr_joint]
+        print("calibration of %s" % j.name)
 
     def calibrate_6(self):
+        j = self.joints[self.curr_joint]
+        print("calibration of %s" % j.name)
         # first rough calculation, 
-        self.oscillate_joint(nr=5, nr_measurements=4)
-        print('rough home of joint 6 is %s' % self.joints[5].home)
+        self.oscillate_joint(nr=self.curr_joint, nr_measurements=4)
+        print('rough home of joint 6 is %s' % j.home)
+        self.move_to_pose(self.moves[self.moves_index])
+        time.sleep(0.05)
+        self.wait_on_finish_moving()
         # then do accurate calculation
-        self.oscillate_joint(nr=5,
+        if self.fine_calibration == True:
+            self.oscillate_joint(nr=self.curr_joint,
                              nr_measurements=10,
-                             nominal=self.joints[5].home,
+                             nominal=j.home,
                              amplitude=0.05,
                              speed=0.005)
         # move to the calculated offset value
-        self.hal.Pin(j.jp_pin("pos-cmd")).set(self.joints[5].home)
-        print('accurate home of joint 6 is %s' % self.joints[5].home)
+        self.hal.Pin(j.jp_pin("pos-cmd")).set(j.home)
+        print('accurate home of joint 6 is %s' % j.home)
+        time.sleep(0.05)
+        self.wait_on_finish_moving()
 
-def init_levelling():
+    def wait_on_finish_moving(self):
+        timeout = 2000
+        t = 0
+        while ((self.hal.Pin('jplanners_active.out').get() == True) and (t < timeout)):
+            time.sleep (0.05)
+            t += 1
+        if (t >= timeout):
+             print("timeout")
+
+    def oninitial(self, e):
+        self.initialize()
+        self.fsm.t_setup()
+
+    def onsetup(self, e):
+        # set indexes to pick the first joint number in sequence
+        self.sequence_index = 0
+        # set index to first list entry
+        self.moves_index = 0
+        self.fsm.t_idle()
+
+    def onactivate_joint(self, e):
+        # set the first joint to calibrate
+        self.curr_joint = self.sequence[self.sequence_index]
+        # select the moves list to use
+        self.moves = self.calibration_moves[self.curr_joint]
+        self.fsm.t_move_to_first_pose()
+
+    def onmove_to_first_pose(self, e):
+        self.move_to_pose(self.moves[self.moves_index])
+        self.wait_on_finish_moving()
+        self.fsm.t_calibrate_joint()
+
+    def oncalibrate_joint(self,e):
+        self.joints[self.curr_joint].calibration()
+        self.fsm.t_joint_calibrated()
+    
+    def onjoint_calibrated(self,e):
+        self.joints[self.curr_joint].calibrated = True
+        self.fsm.t_set_next_joint()
+    
+    def onset_next_joint(self,e):
+        # set index to first list entry
+        self.moves_index = 0
+        if self.sequence_index < (len(self.sequence) - 1):
+            # set indexes to pick the first joint number in sequence
+            self.sequence_index += 1
+            self.fsm.t_activate_joint()
+        else:
+            # just start over with an entire new set if we want.
+            self.sequence_index = 0
+
+    def sync_jp_with_current_pos(self, i=0):
+        if (i != 0):
+            j = self.joints[i]
+            curr_pos = self.hal.Signal('joint%s_ros_pos_fb' % i).get()
+            self.hal.Pin(j.jp_pin("pos-cmd")).set(curr_pos)
+            self.wait_on_finish_moving()
+            print("joint %s HAL synced")
+
+    def init_attributes(self):
+        self.joints={
+            1: Joint(name='joint_1', calibration=self.calibrate_1),
+            2: Joint(name='joint_2', calibration=self.calibrate_2),
+            3: Joint(name='joint_3', calibration=self.calibrate_3),
+            4: Joint(name='joint_4', calibration=self.calibrate_4),
+            5: Joint(name='joint_5', calibration=self.calibrate_5),
+            6: Joint(name='joint_6', calibration=self.calibrate_6),
+            }
+        self.fsm = Fysom(
+            {
+            'initial': {'state': 'initial', 'event': 'init', 'defer': True},
+            'events': [
+                {
+                    'name': 't_setup',
+                    'src': ['initial', 'fault'],
+                    'dst': 'setup',
+                    },
+                {'name': 't_idle', 'src': 'setup', 'dst': 'idle'},
+                {
+                    'name': 't_activate_joint',
+                    'src': ['idle', 'set_next_joint', 'joint_calibrated'],
+                    'dst': 'activate_joint'},
+                {
+                    'name': 't_move_to_first_pose',
+                    'src': ['activate_joint'],
+                    'dst': 'move_to_first_pose'
+                    },
+                {'name': 't_calibrate_joint', 'src': 'move_to_first_pose', 'dst': 'calibrate_joint'},
+                {'name': 't_joint_calibrated', 'src': 'calibrate_joint', 'dst': 'joint_calibrated'},
+                {'name': 't_set_next_joint', 'src': 'joint_calibrated', 'dst': 'set_next_joint'},
+                {'name': 't_move_zero', 'src': 'set_next_joint', 'dst': 'move_to_zero'},
+                {'name': 't_end', 'src': 'move_to_zero', 'dst': 'finished'},
+                {
+                    'name': 't_error',
+                    'src': [
+                        'initial',
+                        'setup',
+                        'idle',
+                        'activate_joint',
+                        'move_to_first_pose',
+                        'start_next_move',
+                        'calibrate_joint',
+                        'joint_calibrated',
+                        'set_next_joint',
+                        'move_to_zero'
+                    ],
+                    'dst': 'fault',
+                    },
+                {
+                    'name': 't_abort',
+                    'src': [
+                        'initial',
+                        'setup',
+                        'idle',
+                        'activate_joint',
+                        'move_to_first_pose',
+                        'calibrate_joint',
+                        'joint_calibrated',
+                        'set_next_joint',
+                        'move_to_zero'
+                    ],
+                    'dst': 'abort',
+                    },
+                ],
+                'callbacks': {
+                    'oninitial': self.oninitial,
+                    'onsetup': self.onsetup,
+                    'onactivate_joint': self.onactivate_joint,
+                    'onmove_to_first_pose': self.onmove_to_first_pose,
+                    'oncalibrate_joint' : self.oncalibrate_joint,
+                    'onjoint_calibrated': self.onjoint_calibrated,
+                    'onset_next_joint': self.onset_next_joint}
+            })
+        self.fsm.init()
+
+
+if __name__ == "__main__":
     l = Leveller(name="Masterer")
-    l.initialize()
+    l.init_attributes()
     try:
         import manhole
         manhole.install(locals={
@@ -402,6 +514,3 @@ def init_levelling():
             time.sleep(0.01)
     except KeyboardInterrupt:
         print("Exiting app")
-
-if __name__ == "__main__":
-    init_levelling()
