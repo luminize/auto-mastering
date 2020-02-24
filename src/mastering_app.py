@@ -154,10 +154,12 @@ class Joint(object):
     sampler_name = attr.ib(default="")
     ring_name = attr.ib(default="")
     max_vel = attr.ib(default=0.1)
-    max_acc = attr.ib(default=0.1)
+    max_acc = attr.ib(default=0.05)
+    min_vel = attr.ib(default=0.01)
+    min_acc = attr.ib(default=0.01)
     curr_pos = attr.ib(default=0.)
     pos_cmd = attr.ib(default=0.)
-    home = attr.ib(default=0.)
+    offset = attr.ib(default=0.)
     calibrated = attr.ib(default=False)
     data_raw = attr.ib(default="")
     calibration = attr.ib(default="callback")
@@ -168,7 +170,7 @@ class Joint(object):
     def sampler_pin(self, pinname=""):
         return "{}.{}".format(self.sampler_name, pinname)
 
-    def calculate_home(self, sample_values=""):
+    def calculate_offset(self, sample_values="", nominal=0):
         if (sample_values!=""):
             d = pd.read_csv(StringIO(sample_values))
             self.raw_data = d
@@ -176,7 +178,7 @@ class Joint(object):
             d_d = d.loc[d['direction']=='down']
             mean_u = d_u.rotation.mean()
             mean_d = d_d.rotation.mean()
-            self.home = (mean_d + mean_u) / 2
+            self.offset = ((mean_d + mean_u) / 2) - nominal
             self.calibrated = True
 
 
@@ -250,7 +252,7 @@ class Leveller(object):
             curr_pos = self.hal.Signal('joint%s_ros_pos_fb' % i).get()
             j = self.joints[i]
             j.curr_pos = curr_pos
-            j.pos_cmd = self.poses[nr][i-1]
+            j.pos_cmd = self.poses[nr][i-1] + j.offset
             abs_dist = abs(j.pos_cmd - j.curr_pos)
             if abs_dist > longest_distance:
                 longest_distance = abs_dist
@@ -264,6 +266,9 @@ class Leveller(object):
                 print("distance joint {} is {} rad".format(i, dist))
                 j.max_acc = self.max_acc * (dist / l_dist) * self.speed_factor
                 j.max_vel = self.max_vel * (dist / l_dist) * self.speed_factor
+                # prevent very slow moves nearing zero velocity
+                if j.max_acc < j.min_acc: j.max_acc = j.min_acc
+                if j.max_vel < j.min_vel: j.max_vel = j.min_vel
 
     def initialize(self):
         for i in range(1,7):
@@ -283,11 +288,13 @@ class Leveller(object):
             j = self.joints[i-1]
             self.hal.Pin(j.pin('enable')).set(1)
 
-    def oscillate_joint(self, nr=0, nominal=0., amplitude=0.5, nr_measurements=5, speed=.1, accel=3.0):
+    def oscillate_joint(self, nr=0, nominal=0., amplitude=0.5, nr_measurements=5, speed=.1, accel=3.0, offset=.0):
         if nr in self.joints:
             direction = 1
-            target = nominal + (amplitude * direction)
-            delta = 0.01
+            center = nominal + offset
+            target = center + (amplitude * direction)
+            # let's set delta as 5% of the amplitude
+            delta = amplitude * 0.05
             measurement = 0
             j = self.joints[nr]
             self.hal.Pin(j.jp_pin("max-vel")).set(speed)
@@ -297,6 +304,7 @@ class Leveller(object):
             self.recorder.reset()
             self.recorder.set_sampler(sampler_name=j.sampler_name,
                                       ring_name=j.ring_name)
+            self.wait_on_finish_moving()
             self.recorder.start()
             while (measurement < nr_measurements):
                 # process the records in the ring
@@ -306,19 +314,19 @@ class Leveller(object):
                 if direction > 0:
                     if curr_pos > (target - delta):
                         direction *= -1
-                        target = nominal + (amplitude * direction)
+                        target = center + (amplitude * direction)
                         measurement += 1
                         print("Measurement: %s" % measurement)
                         self.hal.Pin(j.jp_pin("pos-cmd")).set(target)
                 if direction < 0:
                     if curr_pos < (target + delta):
                         direction *= -1
-                        target = nominal + (amplitude * direction)
+                        target = center + (amplitude * direction)
                         self.hal.Pin(j.jp_pin("pos-cmd")).set(target)
                 time.sleep(0.1)
             self.recorder.stop()
-            self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal)
-            j.calculate_home(sample_values=self.recorder.get_samples())
+            self.hal.Pin(j.jp_pin("pos-cmd")).set(center)
+            j.calculate_offset(sample_values=self.recorder.get_samples(), nominal=nominal)
 
     def calibrate_1(self):
         j = self.joints[self.curr_joint]
@@ -327,47 +335,192 @@ class Leveller(object):
     def calibrate_2(self):
         j = self.joints[self.curr_joint]
         print("calibration of %s" % j.name)
+        # roughly seek around the joint 2 nominal angle
+        nominal_pos = self.poses[self.moves[self.moves_index]][self.curr_joint -1]
+        self.oscillate_joint(nr=self.curr_joint, nr_measurements=4, nominal=nominal_pos)
+        print('rough 1st angle of joint 2 at signal is %s' % (nominal_pos + j.offset))
+        self.move_to_pose(self.moves[self.moves_index])
+        self.wait_on_finish_moving()
+        if self.fine_calibration == True:
+            self.oscillate_joint(nr=self.curr_joint,
+                             nr_measurements=10,
+                             nominal=nominal_pos,
+                             offset=j.offset,
+                             amplitude=0.1,
+                             speed=0.005)
+            print('accurate 1st angle of joint 2 at signal is %s' % (nominal_pos + j.offset))
+        self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
+        self.wait_on_finish_moving()
+        # first part is done, now save this offset value and change poses
+        # to the 180 degree twisted setup and repeat
+        offset_1 = nominal_pos + j.offset
+        j.offset = 0
+        self.moves_index += 1
+        self.move_to_pose(self.moves[self.moves_index])
+        self.wait_on_finish_moving()
+        self.moves_index += 1
+        self.move_to_pose(self.moves[self.moves_index])
+        self.wait_on_finish_moving()
+        # take new measurments for the 2nd offset
+        nominal_pos = self.poses[self.moves[self.moves_index]][self.curr_joint -1]
+        self.oscillate_joint(nr=self.curr_joint, nr_measurements=4, nominal=nominal_pos)
+        print('rough 2nd angle of joint 2 at signal is %s' % (nominal_pos + j.offset))
+        self.move_to_pose(self.moves[self.moves_index])
+        self.wait_on_finish_moving()
+        if self.fine_calibration == True:
+            self.oscillate_joint(nr=self.curr_joint,
+                             nr_measurements=10,
+                             nominal=nominal_pos,
+                             offset=j.offset,
+                             amplitude=0.1,
+                             speed=0.005)
+            print('accurate 2nd angle of joint 2 at signal is %s' % (nominal_pos + j.offset))
+        # move to the calculated offset value
+        self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
+        self.wait_on_finish_moving()
+        offset_2 = nominal_pos + j.offset
+        # the average offset is the real offset of joint 2
+        j.offset = (offset_1 + offset_2) / 2
+        print('offset of joint 2 is %s' % j.offset)
 
     def calibrate_3(self):
         j = self.joints[self.curr_joint]
         print("calibration of %s" % j.name)
-
+        # first rough calculation,
+        nominal_pos = self.poses[self.moves[self.moves_index]][self.curr_joint - 1]
+        self.oscillate_joint(nr=self.curr_joint, nr_measurements=4, nominal=nominal_pos)
+        print('rough offset of joint 3 is %s' % j.offset)
+        self.move_to_pose(self.moves[self.moves_index])
+        self.wait_on_finish_moving()
+        if self.fine_calibration == True:
+            self.oscillate_joint(nr=self.curr_joint,
+                             nr_measurements=10,
+                             nominal=nominal_pos,
+                             offset=j.offset,
+                             amplitude=0.1,
+                             speed=0.005)
+        # move to the calculated offset value
+        self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
+        self.wait_on_finish_moving()
+        print('accurate offset of joint 3 is %s' % j.offset)
+ 
     def calibrate_4(self):
         j = self.joints[self.curr_joint]
         print("calibration of %s" % j.name)
+        # first rough calculation,
+        nominal_pos = self.poses[self.moves[self.moves_index]][self.curr_joint - 1]
+        self.oscillate_joint(nr=self.curr_joint, nr_measurements=4, nominal=nominal_pos)
+        print('rough offset of joint 4 is %s' % j.offset)
+        self.move_to_pose(self.moves[self.moves_index])
+        self.wait_on_finish_moving()
+        if self.fine_calibration == True:
+            self.oscillate_joint(nr=self.curr_joint,
+                             nr_measurements=10,
+                             nominal=nominal_pos,
+                             offset=j.offset,
+                             amplitude=0.1,
+                             speed=0.005)
+        # move to the calculated offset value
+        self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
+        print('accurate offset of joint 4 is %s' % (nominal_pos + j.offset))
+        self.wait_on_finish_moving()
 
     def calibrate_5(self):
+        j3 = self.joints[3]
         j = self.joints[self.curr_joint]
         print("calibration of %s" % j.name)
+        # first remember old home value and find angle for joint 3
+        joint_3_home = j3.offset
+        # roughly seek around the joint 3 nominal angle
+        nominal_pos = self.poses[self.moves[self.moves_index]][2]
+        self.oscillate_joint(nr=3, nr_measurements=4, nominal=nominal_pos)
+        print('rough angle of joint 3 at signal is %s' % (nominal_pos + j3.offset))
+        self.hal.Pin(j3.jp_pin("pos-cmd")).set(nominal_pos + j3.offset)
+        self.wait_on_finish_moving()
+        if self.fine_calibration == True:
+            self.oscillate_joint(nr=3,
+                             nr_measurements=10,
+                             nominal=nominal_pos ,
+                             offset=j3.offset,
+                             amplitude=0.1,
+                             speed=0.005)
+            print('accurate angle of joint 3 at signal is %s' % (nominal_pos + j3.offset))
+        # the angle of jont 3 at which the IMU signals is now known,
+        # now rotate joint 4 and joint 6 and find the offset of joint 5
+        # since joint 5 will be in line with joint 3 and 4, that offset
+        # is the correct deviation from "zero"
+        self.moves_index += 1
+        self.move_to_pose(self.moves[self.moves_index])
+        self.wait_on_finish_moving()
+
+        nominal_pos = self.poses[self.moves[self.moves_index]][self.curr_joint - 1]
+        self.oscillate_joint(nr=self.curr_joint, nr_measurements=4, nominal=nominal_pos)
+        print('rough offset of joint 5 is %s' % (nominal_pos + j.offset))
+        self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
+        self.wait_on_finish_moving()
+        if self.fine_calibration == True:
+            self.oscillate_joint(nr=self.curr_joint,
+                             nr_measurements=10,
+                             nominal=nominal_pos,
+                             offset=j.offset,
+                             amplitude=0.1,
+                             speed=0.005)
+        # move to the calculated offset value
+        self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
+        print('accurate offset of joint 5 is %s' % j.offset)
+        self.wait_on_finish_moving()
+        # put old home value of joint 3 back again
+        self.joints[3].offset = joint_3_home
 
     def calibrate_6(self):
         j = self.joints[self.curr_joint]
         print("calibration of %s" % j.name)
         # first rough calculation, 
-        self.oscillate_joint(nr=self.curr_joint, nr_measurements=4)
-        print('rough home of joint 6 is %s' % j.home)
+        nominal_pos = self.poses[self.moves[self.moves_index]][self.curr_joint - 1]
+        self.oscillate_joint(nr=self.curr_joint, nr_measurements=4, nominal=nominal_pos)
+        print('rough offset of joint 6 is %s' % j.offset)
         self.move_to_pose(self.moves[self.moves_index])
-        time.sleep(0.05)
         self.wait_on_finish_moving()
         # then do accurate calculation
         if self.fine_calibration == True:
             self.oscillate_joint(nr=self.curr_joint,
                              nr_measurements=10,
-                             nominal=j.home,
-                             amplitude=0.05,
+                             nominal=nominal_pos,
+                             offset=j.offset,
+                             amplitude=0.1,
                              speed=0.005)
         # move to the calculated offset value
-        self.hal.Pin(j.jp_pin("pos-cmd")).set(j.home)
-        print('accurate home of joint 6 is %s' % j.home)
-        time.sleep(0.05)
+        self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
+        print('accurate offset of joint 6 is %s' % j.offset)
         self.wait_on_finish_moving()
 
     def wait_on_finish_moving(self):
         timeout = 2000
         t = 0
-        while ((self.hal.Pin('jplanners_active.out').get() == True) and (t < timeout)):
+        prev_pos_arr = [.0, .0, .0, .0, .0, .0]
+        curr_pos_arr = [self.hal.Pin('jp1.0.curr-pos').get(),
+                           self.hal.Pin('jp2.0.curr-pos').get(),
+                           self.hal.Pin('jp3.0.curr-pos').get(),
+                           self.hal.Pin('jp4.0.curr-pos').get(),
+                           self.hal.Pin('jp5.0.curr-pos').get(),
+                           self.hal.Pin('jp6.0.curr-pos').get()]
+        motion = (prev_pos_arr != curr_pos_arr)
+        #while((self.hal.Pin('jplanners_active.out').get() == True) and (t < timeout)):
+        while (motion and (t < timeout)):
             time.sleep (0.05)
             t += 1
+            prev_pos_arr = curr_pos_arr
+            curr_pos_arr = [self.hal.Pin('jp1.0.curr-pos').get(),
+                    self.hal.Pin('jp2.0.curr-pos').get(),
+                    self.hal.Pin('jp3.0.curr-pos').get(),
+                    self.hal.Pin('jp4.0.curr-pos').get(),
+                    self.hal.Pin('jp5.0.curr-pos').get(),
+                    self.hal.Pin('jp6.0.curr-pos').get()]
+
+            #print prev_pos_arr
+            #print curr_pos_arr
+            motion = (prev_pos_arr != curr_pos_arr)
+            #print motion
         if (t >= timeout):
              print("timeout")
 
@@ -408,10 +561,17 @@ class Leveller(object):
         if self.sequence_index < (len(self.sequence) - 1):
             # set indexes to pick the first joint number in sequence
             self.sequence_index += 1
-            self.fsm.t_activate_joint()
+            #self.fsm.t_activate_joint()
         else:
             # just start over with an entire new set if we want.
             self.sequence_index = 0
+            self.fsm.t_move_zero()
+
+    def onmove_to_zero(self,e):
+        self.move_to_pose(7)
+        self.wait_on_finish_moving()
+        self.move_to_pose(1)
+        self.wait_on_finish_moving()
 
     def sync_jp_with_current_pos(self, i=0):
         if (i != 0):
@@ -419,7 +579,7 @@ class Leveller(object):
             curr_pos = self.hal.Signal('joint%s_ros_pos_fb' % i).get()
             self.hal.Pin(j.jp_pin("pos-cmd")).set(curr_pos)
             self.wait_on_finish_moving()
-            print("joint %s HAL synced")
+            print("joint %s HAL synced" % i)
 
     def init_attributes(self):
         self.joints={
@@ -493,7 +653,8 @@ class Leveller(object):
                     'onmove_to_first_pose': self.onmove_to_first_pose,
                     'oncalibrate_joint' : self.oncalibrate_joint,
                     'onjoint_calibrated': self.onjoint_calibrated,
-                    'onset_next_joint': self.onset_next_joint}
+                    'onset_next_joint': self.onset_next_joint,
+                    'onmove_to_zero': self.onmove_to_zero}
             })
         self.fsm.init()
 
