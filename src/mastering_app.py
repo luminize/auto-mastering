@@ -238,6 +238,10 @@ class Leveller(object):
     calib_slow_amp = attr.ib(default=0.1)
     speed_factor = attr.ib(default=1.)
     fully_automatic_levelling = attr.ib(default=True)
+    info_callback = attr.ib(default='put_callback_here')
+
+    def dummy_print_callback(self, txt):
+        print(txt)
 
     def start(self):
         self.fsm.t_activate_joint()
@@ -289,6 +293,7 @@ class Leveller(object):
             j.sampler_name = "sampler{}".format(i)
             j.ring_name = "sampler{}.ring".format(i)
         self.recorder = Recorder(name="sample_recorder", hal=self.hal)
+        self.info_callback = self.dummy_print_callback
 
     def disable_all_jplan(self):
         for i in range(1,7):
@@ -328,7 +333,7 @@ class Leveller(object):
                         direction *= -1
                         target = center + (amplitude * direction)
                         measurement += 1
-                        print("Measurement: %s" % measurement)
+                        self.info_callback("Measurement: %s" % measurement)
                         self.hal.Pin(j.jp_pin("pos-cmd")).set(target)
                 if direction < 0:
                     if curr_pos < (target + delta):
@@ -342,11 +347,11 @@ class Leveller(object):
 
     def calibrate_1(self):
         j = self.joints[self.curr_joint]
-        print("calibration of %s" % j.name)
+        #self.info_callback("calibration of %s" % j.name)
 
     def calibrate_2(self):
         j = self.joints[self.curr_joint]
-        print("calibration of %s" % j.name)
+        self.info_callback("calibration of %s" % j.name)
         # roughly seek around the joint 2 nominal angle
         nominal_pos = self.poses[self.moves[self.moves_index]][self.curr_joint -1]
         self.oscillate_joint(nr=self.curr_joint,
@@ -355,7 +360,7 @@ class Leveller(object):
                             accel=self.calib_fast_acc,
                             amplitude=self.calib_fast_amp,
                             speed=self.calib_fast_vel)
-        print('rough 1st angle of joint 2 at signal is %s' % (nominal_pos + j.offset))
+        self.info_callback('rough 1st angle of joint 2 at signal is %s' % (nominal_pos + j.offset))
         self.move_to_pose(self.moves[self.moves_index])
         self.wait_on_finish_moving()
         if self.fine_calibration == True:
@@ -366,7 +371,7 @@ class Leveller(object):
                              accel=self.calib_slow_acc,
                              amplitude=self.calib_slow_amp,
                              speed=self.calib_slow_vel)
-            print('accurate 1st angle of joint 2 at signal is %s' % (nominal_pos + j.offset))
+            self.info_callback('accurate 1st angle of joint 2 at signal is %s' % (nominal_pos + j.offset))
         self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
         self.wait_on_finish_moving()
         # first part is done, now save this offset value and change poses
@@ -387,7 +392,7 @@ class Leveller(object):
                             accel=self.calib_fast_acc,
                             amplitude=self.calib_fast_amp,
                             speed=self.calib_fast_vel)
-        print('rough 2nd angle of joint 2 at signal is %s' % (nominal_pos + j.offset))
+        self.info_callback('rough 2nd angle of joint 2 at signal is %s' % (nominal_pos + j.offset))
         self.move_to_pose(self.moves[self.moves_index])
         self.wait_on_finish_moving()
         if self.fine_calibration == True:
@@ -398,18 +403,18 @@ class Leveller(object):
                              accel=self.calib_slow_acc,
                              amplitude=self.calib_slow_amp,
                              speed=self.calib_slow_vel)
-            print('accurate 2nd angle of joint 2 at signal is %s' % (nominal_pos + j.offset))
+            self.info_callback('accurate 2nd angle of joint 2 at signal is %s' % (nominal_pos + j.offset))
         # move to the calculated offset value
         self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
         self.wait_on_finish_moving()
         offset_2 = nominal_pos + j.offset
         # the average offset is the real offset of joint 2
         j.offset = (offset_1 + offset_2) / 2
-        print('offset of joint 2 is %s' % j.offset)
+        self.info_callback('offset of joint 2 is %s' % j.offset)
 
     def calibrate_3(self):
         j = self.joints[self.curr_joint]
-        print("calibration of %s" % j.name)
+        self.info_callback("calibration of %s" % j.name)
         # first rough calculation,
         nominal_pos = self.poses[self.moves[self.moves_index]][self.curr_joint - 1]
         self.oscillate_joint(nr=self.curr_joint,
@@ -418,7 +423,7 @@ class Leveller(object):
                             accel=self.calib_fast_acc,
                             amplitude=self.calib_fast_amp,
                             speed=self.calib_fast_vel)
-        print('rough offset of joint 3 is %s' % j.offset)
+        self.info_callback('rough offset of joint 3 is %s' % j.offset)
         self.move_to_pose(self.moves[self.moves_index])
         self.wait_on_finish_moving()
         if self.fine_calibration == True:
@@ -432,11 +437,11 @@ class Leveller(object):
         # move to the calculated offset value
         self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
         self.wait_on_finish_moving()
-        print('accurate offset of joint 3 is %s' % j.offset)
+        self.info_callback('accurate offset of joint 3 is %s' % j.offset)
  
     def calibrate_4(self):
         j = self.joints[self.curr_joint]
-        print("calibration of %s" % j.name)
+        self.info_callback("calibration of %s" % j.name)
         # first rough calculation,
         nominal_pos = self.poses[self.moves[self.moves_index]][self.curr_joint - 1]
         self.oscillate_joint(nr=self.curr_joint,
@@ -445,7 +450,7 @@ class Leveller(object):
                             accel=self.calib_fast_acc,
                             amplitude=self.calib_fast_amp,
                             speed=self.calib_fast_vel)
-        print('rough offset of joint 4 is %s' % j.offset)
+        self.info_callback('rough offset of joint 4 is %s' % j.offset)
         self.move_to_pose(self.moves[self.moves_index])
         self.wait_on_finish_moving()
         if self.fine_calibration == True:
@@ -458,13 +463,13 @@ class Leveller(object):
                              speed=self.calib_slow_vel)
         # move to the calculated offset value
         self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
-        print('accurate offset of joint 4 is %s' % (nominal_pos + j.offset))
+        self.info_callback('accurate offset of joint 4 is %s' % (nominal_pos + j.offset))
         self.wait_on_finish_moving()
 
     def calibrate_5(self):
         j3 = self.joints[3]
         j = self.joints[self.curr_joint]
-        print("calibration of %s" % j.name)
+        self.info_callback("calibration of %s" % j.name)
         # first remember old home value and find angle for joint 3
         joint_3_home = j3.offset
         # roughly seek around the joint 3 nominal angle
@@ -475,7 +480,7 @@ class Leveller(object):
                             accel=self.calib_fast_acc,
                             amplitude=self.calib_fast_amp,
                             speed=self.calib_fast_vel)
-        print('rough angle of joint 3 at signal is %s' % (nominal_pos + j3.offset))
+        self.info_callback('rough angle of joint 3 at signal is %s' % (nominal_pos + j3.offset))
         self.hal.Pin(j3.jp_pin("pos-cmd")).set(nominal_pos + j3.offset)
         self.wait_on_finish_moving()
         if self.fine_calibration == True:
@@ -486,7 +491,7 @@ class Leveller(object):
                              accel=self.calib_slow_acc,
                              amplitude=self.calib_slow_amp,
                              speed=self.calib_slow_vel)
-            print('accurate angle of joint 3 at signal is %s' % (nominal_pos + j3.offset))
+            self.info_callback('accurate angle of joint 3 at signal is %s' % (nominal_pos + j3.offset))
         # the angle of jont 3 at which the IMU signals is now known,
         # now rotate joint 4 and joint 6 and find the offset of joint 5
         # since joint 5 will be in line with joint 3 and 4, that offset
@@ -502,7 +507,7 @@ class Leveller(object):
                             accel=self.calib_fast_acc,
                             amplitude=self.calib_fast_amp,
                             speed=self.calib_fast_vel)
-        print('rough offset of joint 5 is %s' % (nominal_pos + j.offset))
+        self.info_callback('rough offset of joint 5 is %s' % (nominal_pos + j.offset))
         self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
         self.wait_on_finish_moving()
         if self.fine_calibration == True:
@@ -515,14 +520,14 @@ class Leveller(object):
                              speed=self.calib_slow_vel)
         # move to the calculated offset value
         self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
-        print('accurate offset of joint 5 is %s' % j.offset)
+        self.info_callback('accurate offset of joint 5 is %s' % j.offset)
         self.wait_on_finish_moving()
         # put old home value of joint 3 back again
         self.joints[3].offset = joint_3_home
 
     def calibrate_6(self):
         j = self.joints[self.curr_joint]
-        print("calibration of %s" % j.name)
+        self.info_callback("calibration of %s" % j.name)
         # first rough calculation, 
         nominal_pos = self.poses[self.moves[self.moves_index]][self.curr_joint - 1]
         self.oscillate_joint(nr=self.curr_joint,
@@ -531,7 +536,7 @@ class Leveller(object):
                             accel=self.calib_fast_acc,
                             amplitude=self.calib_fast_amp,
                             speed=self.calib_fast_vel)
-        print('rough offset of joint 6 is %s' % j.offset)
+        self.info_callback('rough offset of joint 6 is %s' % j.offset)
         self.move_to_pose(self.moves[self.moves_index])
         self.wait_on_finish_moving()
         # then do accurate calculation
@@ -545,7 +550,7 @@ class Leveller(object):
                              speed=self.calib_slow_vel)
         # move to the calculated offset value
         self.hal.Pin(j.jp_pin("pos-cmd")).set(nominal_pos + j.offset)
-        print('accurate offset of joint 6 is %s' % j.offset)
+        self.info_callback('accurate offset of joint 6 is %s' % j.offset)
         self.wait_on_finish_moving()
 
     def wait_on_finish_moving(self):

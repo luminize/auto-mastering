@@ -102,7 +102,11 @@ def insert_jplanners():
 def change_config():
     
     # connect to HAL
-    rt.init_RTAPI()
+    try: 
+        rt.init_RTAPI()
+    except RuntimeError as e:
+        pass
+
     #hal.stop_threads()
     time.sleep(0.1)
 
